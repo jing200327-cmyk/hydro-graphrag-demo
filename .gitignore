@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# Outputs / logs
+output/
+outputs/run_logs/
+outputs/eval_reports/
+*.log
+
+# Large model files
+models/
+*.bin
+*.safetensors
+*.pt
+*.pth
+
+# Excel / temporary files
+~$*.xlsx
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
