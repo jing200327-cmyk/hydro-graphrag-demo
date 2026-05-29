@@ -120,6 +120,7 @@ def run_qa(
         max_tokens=max_tokens,
         save_outputs=True,
         enable_llm=True,
+        enable_rankgpt=False,
     )
 
     return normalize_result(raw_result)

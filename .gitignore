@@ -26,7 +26,16 @@ env/
 output/
 outputs/run_logs/
 outputs/eval_reports/
+evals/reports/
+evals/reports_*/
+evals/reports_v2/
+evals/reports_v2_*/
+evals/reports_answer_*/
 *.log
+
+# Local tunnel binaries
+cloudflared-windows-amd64.exe
+ngrok.exe
 
 # Large model files
 models/

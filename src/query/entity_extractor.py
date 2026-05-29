@@ -70,7 +70,117 @@ CAUSAL_KEYWORDS = [
     "对应", "支持", "倾向", "表明",
     "INCREASES", "REDUCES", "AFFECTS", "SUPPORTS", "TENDS_TO_HAVE",
 ]
+# =========================
+# Structured ID Extraction
+# =========================
 
+LAYER_ID_RE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"([A-Za-z]{2,}[A-Za-z0-9-]*\d+[A-Za-z0-9-]*\s*_\s*\d+[A-Za-z0-9-]*)"
+    r"(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+
+BOREHOLE_ID_RE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"([A-Za-z]{2,}[A-Za-z0-9-]*\d+[A-Za-z0-9-]*)"
+    r"(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+
+
+def normalize_structured_id(value: str) -> str:
+    """
+    标准化结构化 ID。
+
+    例如：
+    - chgc001_2 -> CHGC001_2
+    - CHGC001 _ 2 -> CHGC001_2
+    """
+    return re.sub(r"\s+", "", safe_text(value)).upper()
+
+
+def extract_layer_ids(question: str) -> List[str]:
+    """
+    从用户问题中抽取 layer_id。
+
+    支持示例：
+    - CHGC001_2
+    - chgc001_2
+    - CHGC001 _ 2
+    - ZK001_3
+    """
+    text = safe_text(question)
+
+    values = [
+        normalize_structured_id(match.group(1))
+        for match in LAYER_ID_RE.finditer(text)
+    ]
+
+    return unique_keep_order([v for v in values if v])
+
+
+def extract_borehole_ids(question: str) -> List[str]:
+    """
+    从用户问题中抽取 borehole_id。
+
+    支持示例：
+    - CHGC001
+    - chgc001
+    - ZK001
+
+    注意：
+    - CHGC001_2 是 layer_id。
+    - 这里会额外从 layer_id 中反推出 CHGC001，便于后续精确匹配 borehole_id。
+    """
+    text = safe_text(question)
+
+    layer_ids = extract_layer_ids(text)
+
+    # 先从 layer_id 反推 borehole_id
+    values: List[str] = []
+    for layer_id in layer_ids:
+        if "_" in layer_id:
+            values.append(layer_id.split("_", 1)[0])
+
+    # 再抽取独立出现的 borehole_id
+    # 为避免 CHGC001_2 被误抽为 CHGC001，先把 layer_id 从文本中移除
+    text_without_layer_id = LAYER_ID_RE.sub(" ", text)
+
+    for match in BOREHOLE_ID_RE.finditer(text_without_layer_id):
+        values.append(normalize_structured_id(match.group(1)))
+
+    return unique_keep_order([v for v in values if v])
+
+
+def extract_layer_ordinal_expressions(question: str) -> List[str]:
+    """
+    抽取非 ID 形式的层序表达。
+
+    支持示例：
+    - 第2层
+    - 第二层
+    - 2号层
+    - 第 3 个分层
+
+    这类不是精确 layer_id，但可以作为辅助实体。
+    """
+    text = safe_text(question)
+
+    patterns = [
+        r"第\s*\d+\s*层",
+        r"\d+\s*号\s*层",
+        r"第\s*\d+\s*个\s*分层",
+        r"第\s*[一二三四五六七八九十]+\s*层",
+        r"第\s*[一二三四五六七八九十]+\s*个\s*分层",
+    ]
+
+    results: List[str] = []
+
+    for pattern in patterns:
+        results.extend(re.findall(pattern, text))
+
+    return unique_keep_order([safe_text(v) for v in results if safe_text(v)])
 
 def run_cypher_to_list(driver, database: str, cypher: str, field: str) -> List[str]:
     with driver.session(database=database) as session:
@@ -179,7 +289,44 @@ def extract_core_entities(user_question: str) -> List[Dict[str, str]]:
     vocab = load_vocab_cache()
 
     entities: List[Dict[str, str]] = []
+ # 1. 优先抽取精确 layer_id
+    # 这一步用于解决 CHGC001_1 / CHGC001_2 这类精确层位无法稳定被向量检索区分的问题
+    for layer_id in extract_layer_ids(question):
+        entities.append(
+            {
+                "实体类型": "层位",
+                "实体值": layer_id,
+                "来源": "Regex.layer_id",
+                "字段名": "layer_id",
+            }
+        )
 
+    # 2. 抽取 borehole_id
+    # 包括：
+    # - 问题中独立出现的 CHGC001
+    # - 从 CHGC001_2 反推得到的 CHGC001
+    for borehole_id in extract_borehole_ids(question):
+        entities.append(
+            {
+                "实体类型": "钻孔",
+                "实体值": borehole_id,
+                "来源": "Regex.borehole_id",
+                "字段名": "borehole_id",
+            }
+        )
+
+    # 3. 抽取“第几层”这类非精确 layer_id 的层序表达
+    for ordinal in extract_layer_ordinal_expressions(question):
+        entities.append(
+            {
+                "实体类型": "层序号",
+                "实体值": ordinal,
+                "来源": "Regex.layer_ordinal",
+                "字段名": "layer_ordinal",
+            }
+        )
+
+    # 4. 原有 Neo4j 词表匹配逻辑
     mapping = [
         ("钻孔", "Neo4j.Borehole", vocab.get("borehole", [])),
         ("层位", "Neo4j.LithologyLayer", vocab.get("layer", [])),
@@ -199,7 +346,7 @@ def extract_core_entities(user_question: str) -> List[Dict[str, str]]:
                     "来源": source,
                 }
             )
-
+    # 5. 原有水文地质关键词识别
     for factor_name, keywords in HYDRO_FACTOR_KEYWORDS.items():
         for kw in keywords:
             if kw in question:
@@ -210,7 +357,7 @@ def extract_core_entities(user_question: str) -> List[Dict[str, str]]:
                         "来源": "HydroExpertDictionary",
                     }
                 )
-
+    # 6. 原有深度表达抽取
     for value in extract_depth_expressions(question):
         entities.append(
             {
@@ -219,7 +366,7 @@ def extract_core_entities(user_question: str) -> List[Dict[str, str]]:
                 "来源": "Regex",
             }
         )
-
+    # 7. 去重
     dedup: List[Dict[str, str]] = []
     seen = set()
 
