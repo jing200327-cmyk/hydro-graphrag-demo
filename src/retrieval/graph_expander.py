@@ -153,6 +153,11 @@ def graph_context_to_text(context: Dict[str, Any]) -> str:
         "observed_permeability_level",
         "level_name",
         "explanation",
+        "mechanism",
+        "mechanism_keywords",
+        "pore_connectivity",
+        "pore_structure",
+        "flow_pathway",
     ]
 
     parts: List[str] = []

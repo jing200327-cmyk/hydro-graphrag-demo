@@ -17,18 +17,33 @@ from src.retrieval.neo4j_vector_retriever import vector_search_chunks
 from src.retrieval.graph_expander import graph_expand_chunks
 from src.retrieval.context_builder import merge_vector_and_graph_context
 from src.retrieval.exact_retriever import exact_retrieve_chunks
+from src.retrieval.lithology_type_retriever import (
+    extract_lithology_type_query,
+    is_lithology_permeability_level_query,
+    lithology_type_rerank,
+    retrieve_lithology_type_exact,
+)
+from src.retrieval.hydro_feature_retriever import (
+    extract_hydro_feature_query,
+    hydro_feature_rerank,
+    is_hydro_feature_causal_query,
+    retrieve_hydro_feature_exact,
+)
 from src.rerank.scorer import b_score_chunks
 from src.rerank.reranker import c_rerank_chunks
 from src.rerank.rankgpt_reranker import rankgpt_rerank_chunks
 from src.generation.prompt_builder import build_final_prompt
 from src.generation.answer_generator import generate_answer
 from src.fallback.confidence import compute_final_confidence
+from src.fallback.entity_guard import apply_entity_existence_guard
 from src.fallback.fallback_policy import apply_fallback_policy
 from src.utils.env import get_driver
 from src.utils.text import safe_text, make_json_safe
 
 
 FACT_QUERY_INTENT = "fact_query"
+LITHOLOGY_TYPE_EXACT_ROUTE = "lithology_type_exact_retrieval"
+HYDRO_FEATURE_EXACT_ROUTE = "hydro_feature_exact_retrieval"
 
 
 # ============================================================
@@ -239,6 +254,166 @@ def _build_empty_retrieval_result(
     return result
 
 
+def _build_entity_guard_fallback_result(
+    user_question: str,
+    question_analysis: Dict[str, Any],
+    question_intent: str,
+    retrieval_route: str,
+    entity_guard_result: Dict[str, Any],
+    save_outputs: bool,
+) -> Dict[str, Any]:
+    """
+    闭集实体预检失败时的统一返回。
+
+    这类问题不再进入向量召回或 LLM 生成，避免用相似实体编造事实答案。
+    """
+
+    fallback_answer = entity_guard_result.get("fallback_answer", "")
+
+    result = {
+        "user_question": user_question,
+        "question_analysis": question_analysis,
+        "question_intent": question_intent,
+        "retrieval_route": retrieval_route,
+        "rerank_route": "",
+        "vector_search_results": [],
+        "graph_expansion_results": {},
+        "b_score_results": [],
+        "c_rerank_results": [],
+        "rankgpt_results": [],
+        "effective_rerank_results": [],
+        "final_prompt": "",
+        "final_answer": fallback_answer,
+        "deepseek_usage": None,
+        "confidence": 0.0,
+        "fallback_triggered": True,
+        "fallback_answer": fallback_answer,
+        "fallback_reason": entity_guard_result.get("fallback_reason", ""),
+        "entity_guard": entity_guard_result,
+    }
+
+    if save_outputs:
+        save_qa_outputs(result)
+
+    return result
+
+
+def _build_lithology_type_fallback_answer(
+    lithology_major_v2: str,
+    lithology_minor_v3: str,
+    near_chunks: List[Dict[str, Any]],
+) -> str:
+    base = (
+        "根据当前 LithologyType 结构化记录，未找到岩性大类和岩性小类同时精确匹配的"
+        "基础透水等级倾向记录，因此不能用相近岩性替代回答。"
+    )
+
+    if not near_chunks:
+        return (
+            f"{base}\n\n"
+            f"查询条件：lithology_major_v2={lithology_major_v2}，"
+            f"lithology_minor_v3={lithology_minor_v3}。"
+        )
+
+    near_labels: List[str] = []
+    for chunk in near_chunks[:5]:
+        props = chunk.get("source_props") or {}
+        major = safe_text(props.get("lithology_major_v2", ""))
+        minor = safe_text(props.get("lithology_minor_v3", ""))
+        level = safe_text(props.get("base_permeability_level", ""))
+
+        if major or minor:
+            near_labels.append(f"{major}|{minor}|{level}")
+
+    near_text = "；".join([x for x in near_labels if x])
+
+    return (
+        f"{base}\n\n"
+        f"查询条件：lithology_major_v2={lithology_major_v2}，"
+        f"lithology_minor_v3={lithology_minor_v3}。"
+        f"\n仅检索到相近岩性记录：{near_text}。"
+    )
+
+
+def _build_lithology_type_direct_answer(
+    chunk: Dict[str, Any],
+) -> str:
+    props = chunk.get("source_props") or {}
+    major = safe_text(props.get("lithology_major_v2", ""))
+    minor = safe_text(props.get("lithology_minor_v3", ""))
+    level = safe_text(props.get("base_permeability_level", ""))
+
+    return (
+        f"{major}中的{minor}在 demo 知识库中的基础透水等级倾向为{level}。"
+        "具体钻孔或层位的结论仍应以项目记录和实测/计算渗透率为准。"
+    )
+
+
+def _build_hydro_feature_direct_answer(
+    chunks: List[Dict[str, Any]],
+) -> str:
+    if not chunks:
+        return ""
+
+    parts: List[str] = []
+
+    for chunk in chunks[:2]:
+        props = chunk.get("source_props") or {}
+        feature_type = safe_text(props.get("feature_type", ""))
+        feature = safe_text(props.get("feature_value", ""))
+        effect = safe_text(props.get("permeability_effect", ""))
+        weight = safe_text(props.get("effect_weight", ""))
+        confidence = safe_text(props.get("confidence", ""))
+        mechanism = safe_text(props.get("mechanism", ""))
+
+        parts.append(
+            f"资料规则显示：特征类型为 {feature_type}，特征取值为“{feature}”，"
+            f"对渗透率的影响为“{effect}”，影响权重为{weight}，置信度为{confidence}。"
+            f"{mechanism}"
+        )
+
+    return "\n".join(parts)
+
+
+def _build_hydro_feature_fallback_answer(
+    feature_value: str,
+    permeability_effect: str,
+    near_chunks: List[Dict[str, Any]],
+) -> str:
+    base = (
+        "根据当前 HydroFeature 结构化记录，未找到 feature_value 和 "
+        "permeability_effect 同时精确匹配的因果规则，因此不能用相近特征替代解释。"
+    )
+
+    if not near_chunks:
+        return (
+            f"{base}\n\n"
+            f"查询条件：feature_value={feature_value}，"
+            f"permeability_effect={permeability_effect}。"
+        )
+
+    near_labels: List[str] = []
+    for chunk in near_chunks[:5]:
+        props = chunk.get("source_props") or {}
+        near_labels.append(
+            "|".join(
+                [
+                    safe_text(props.get("feature_value", "")),
+                    safe_text(props.get("permeability_effect", "")),
+                    safe_text(props.get("effect_weight", "")),
+                    safe_text(props.get("confidence", "")),
+                ]
+            )
+        )
+
+    return (
+        f"{base}\n\n"
+        f"查询条件：feature_value={feature_value}，"
+        f"permeability_effect={permeability_effect}。"
+        f"\n仅检索到相近规则：{'；'.join([x for x in near_labels if x])}。"
+    )
+
+
 def _compute_fact_query_confidence(
     retrieved_chunks: List[Dict[str, Any]],
     effective_rerank_results: List[Dict[str, Any]],
@@ -427,6 +602,225 @@ def _run_fact_query_chain(
 # 4. 原水文 GraphRAG 链路
 # ============================================================
 
+def _run_lithology_type_chain(
+    user_question: str,
+    question_analysis: Dict[str, Any],
+    driver: Any,
+    final_top_k: int,
+) -> Dict[str, Any]:
+    """
+    LithologyType 精确链路。
+
+    用于“岩性大类 + 岩性小类 + 基础透水等级倾向”问题。
+    这类问题是闭集结构化查询，不允许向量近邻决定答案。
+    """
+
+    query = extract_lithology_type_query(
+        user_question=user_question,
+        question_analysis=question_analysis,
+    )
+    major = query["lithology_major_v2"]
+    minor = query["lithology_minor_v3"]
+
+    exact_chunks, near_chunks = retrieve_lithology_type_exact(
+        lithology_major_v2=major,
+        lithology_minor_v3=minor,
+        driver=driver,
+        database=NEO4J_DATABASE,
+    )
+
+    if not exact_chunks:
+        fallback_answer = _build_lithology_type_fallback_answer(
+            lithology_major_v2=major,
+            lithology_minor_v3=minor,
+            near_chunks=near_chunks,
+        )
+
+        return {
+            "retrieval_route": LITHOLOGY_TYPE_EXACT_ROUTE,
+            "rerank_route": "lithology_type_rule",
+            "retrieved_chunks": near_chunks,
+            "graph_expansion_map": {},
+            "b_score_results": [],
+            "c_rerank_results": [],
+            "rankgpt_results": [],
+            "effective_rerank_results": [],
+            "confidence": 0.0,
+            "direct_answer": "",
+            "chain_fallback_result": {
+                "fallback_triggered": True,
+                "fallback_reason": (
+                    "LithologyType 中不存在精确岩性组合："
+                    f"{major}|{minor}。"
+                ),
+                "fallback_answer": fallback_answer,
+                "entity_guard_checks": {
+                    "lithology_major_v2": major,
+                    "lithology_minor_v3": minor,
+                    "near_candidate_count": len(near_chunks),
+                },
+            },
+        }
+
+    c_rerank_results = lithology_type_rerank(
+        retrieved_chunks=exact_chunks,
+        lithology_major_v2=major,
+        lithology_minor_v3=minor,
+        final_top_k=final_top_k,
+    )
+
+    effective_rerank_results = [
+        item
+        for item in c_rerank_results
+        if item.get("use_for_context") is True
+    ][:final_top_k]
+
+    direct_answer = _build_lithology_type_direct_answer(exact_chunks[0])
+
+    b_score_results = [
+        {
+            "chunk_id": chunk.get("chunk_id"),
+            "score": 100.0,
+            "matched_entities": [major, minor],
+            "matched_permeability_factors": ["基础透水等级倾向"],
+            "keep": True,
+            "reason": (
+                "LithologyType 结构化索引精确命中 "
+                f"lithology_major_v2={major}, lithology_minor_v3={minor}。"
+            ),
+        }
+        for chunk in exact_chunks
+    ]
+
+    return {
+        "retrieval_route": LITHOLOGY_TYPE_EXACT_ROUTE,
+        "rerank_route": "lithology_type_rule",
+        "retrieved_chunks": exact_chunks,
+        "graph_expansion_map": {},
+        "b_score_results": b_score_results,
+        "c_rerank_results": c_rerank_results,
+        "rankgpt_results": [],
+        "effective_rerank_results": effective_rerank_results,
+        "confidence": 100.0,
+        "direct_answer": direct_answer,
+        "chain_fallback_result": None,
+    }
+
+
+def _run_hydro_feature_chain(
+    user_question: str,
+    question_analysis: Dict[str, Any],
+    driver: Any,
+    final_top_k: int,
+) -> Dict[str, Any]:
+    """
+    HydroFeature 精确链路。
+
+    用于因果解释类问题：feature_value 和 permeability_effect 是硬约束，
+    mechanism 覆盖是半硬约束，用于确保候选证据不仅是规则事实，还包含机制解释。
+    """
+
+    query = extract_hydro_feature_query(user_question)
+    feature = query["feature_value"]
+    effect = query["permeability_effect"]
+
+    exact_chunks, near_chunks = retrieve_hydro_feature_exact(
+        feature_value=feature,
+        permeability_effect=effect,
+        driver=driver,
+        database=NEO4J_DATABASE,
+    )
+
+    if not exact_chunks:
+        fallback_answer = _build_hydro_feature_fallback_answer(
+            feature_value=feature,
+            permeability_effect=effect,
+            near_chunks=near_chunks,
+        )
+
+        return {
+            "retrieval_route": HYDRO_FEATURE_EXACT_ROUTE,
+            "rerank_route": "hydro_feature_rule",
+            "retrieved_chunks": near_chunks,
+            "graph_expansion_map": {},
+            "b_score_results": [],
+            "c_rerank_results": [],
+            "rankgpt_results": [],
+            "effective_rerank_results": [],
+            "confidence": 0.0,
+            "direct_answer": "",
+            "chain_fallback_result": {
+                "fallback_triggered": True,
+                "fallback_reason": (
+                    "HydroFeature 中不存在精确因果规则："
+                    f"{feature}|{effect}。"
+                ),
+                "fallback_answer": fallback_answer,
+                "entity_guard_checks": {
+                    "feature_value": feature,
+                    "permeability_effect": effect,
+                    "near_candidate_count": len(near_chunks),
+                },
+            },
+        }
+
+    c_rerank_results = hydro_feature_rerank(
+        retrieved_chunks=exact_chunks,
+        feature_value=feature,
+        permeability_effect=effect,
+        final_top_k=final_top_k,
+    )
+
+    effective_rerank_results = [
+        item
+        for item in c_rerank_results
+        if item.get("feature_value_hit")
+        and item.get("permeability_effect_hit")
+        and item.get("mechanism_hit")
+    ][:final_top_k]
+
+    direct_chunks_by_id = {
+        safe_text(chunk.get("chunk_id", "")): chunk
+        for chunk in exact_chunks
+    }
+    direct_chunks = [
+        direct_chunks_by_id.get(safe_text(item.get("chunk_id", "")))
+        for item in effective_rerank_results
+    ]
+    direct_chunks = [chunk for chunk in direct_chunks if chunk]
+
+    direct_answer = _build_hydro_feature_direct_answer(direct_chunks or exact_chunks)
+
+    b_score_results = [
+        {
+            "chunk_id": chunk.get("chunk_id"),
+            "score": 100.0,
+            "matched_entities": [feature, effect],
+            "matched_permeability_factors": ["HydroFeature", "mechanism"],
+            "keep": True,
+            "reason": (
+                "HydroFeature 结构化索引精确命中 "
+                f"feature_value={feature}, permeability_effect={effect}。"
+            ),
+        }
+        for chunk in exact_chunks
+    ]
+
+    return {
+        "retrieval_route": HYDRO_FEATURE_EXACT_ROUTE,
+        "rerank_route": "hydro_feature_rule",
+        "retrieved_chunks": exact_chunks,
+        "graph_expansion_map": {},
+        "b_score_results": b_score_results,
+        "c_rerank_results": c_rerank_results,
+        "rankgpt_results": [],
+        "effective_rerank_results": effective_rerank_results,
+        "confidence": 100.0,
+        "direct_answer": direct_answer,
+        "chain_fallback_result": None,
+    }
+
+
 def _run_hydro_graphrag_chain(
     user_question: str,
     question_analysis: Dict[str, Any],
@@ -607,8 +1001,60 @@ def run_end_to_end_graphrag_qa(
     # 如果 enable_llm=False，通常用于离线检索/重排测试，这里也默认不调用 RankGPT。
     effective_enable_rankgpt = bool(enable_rankgpt and enable_llm)
 
-    # 3. Route：fact_query 走新链路，其他问题走原链路
-    if _is_fact_query(question_analysis):
+    is_lithology_level_query = is_lithology_permeability_level_query(
+        user_question=user_question,
+        question_analysis=question_analysis,
+    )
+    is_hydro_feature_query = is_hydro_feature_causal_query(
+        user_question=user_question,
+        question_analysis=question_analysis,
+    )
+    is_fact_query = _is_fact_query(question_analysis)
+
+    if is_lithology_level_query:
+        retrieval_route_for_guard = LITHOLOGY_TYPE_EXACT_ROUTE
+    elif is_hydro_feature_query:
+        retrieval_route_for_guard = HYDRO_FEATURE_EXACT_ROUTE
+    elif is_fact_query:
+        retrieval_route_for_guard = "fact_exact_retrieval"
+    else:
+        retrieval_route_for_guard = "vector_graph_retrieval"
+
+    preflight_entity_guard_result = apply_entity_existence_guard(
+        driver=driver,
+        database=NEO4J_DATABASE,
+        user_question=user_question,
+        question_analysis=question_analysis,
+        retrieved_chunks=[],
+        effective_rerank_results=[],
+    )
+
+    if preflight_entity_guard_result["fallback_triggered"]:
+        return _build_entity_guard_fallback_result(
+            user_question=user_question,
+            question_analysis=question_analysis,
+            question_intent=question_intent,
+            retrieval_route=retrieval_route_for_guard,
+            entity_guard_result=preflight_entity_guard_result,
+            save_outputs=save_outputs,
+        )
+
+    # 3. Route：LithologyType 结构化查询 / HydroFeature 因果查询 / fact_query / 原 GraphRAG 链路
+    if is_lithology_level_query:
+        chain_result = _run_lithology_type_chain(
+            user_question=user_question,
+            question_analysis=question_analysis,
+            driver=driver,
+            final_top_k=final_top_k,
+        )
+    elif is_hydro_feature_query:
+        chain_result = _run_hydro_feature_chain(
+            user_question=user_question,
+            question_analysis=question_analysis,
+            driver=driver,
+            final_top_k=final_top_k,
+        )
+    elif is_fact_query:
         chain_result = _run_fact_query_chain(
             user_question=user_question,
             question_analysis=question_analysis,
@@ -643,24 +1089,82 @@ def run_end_to_end_graphrag_qa(
     effective_rerank_results = chain_result["effective_rerank_results"]
     confidence = chain_result["confidence"]
 
+    chain_fallback_result = chain_result.get("chain_fallback_result")
+    if chain_fallback_result and chain_fallback_result.get("fallback_triggered"):
+        fallback_answer = chain_fallback_result.get("fallback_answer", "")
+        result = {
+            "user_question": user_question,
+            "question_analysis": question_analysis,
+            "question_intent": question_intent,
+            "retrieval_route": chain_result["retrieval_route"],
+            "rerank_route": chain_result["rerank_route"],
+            "vector_search_results": retrieved_chunks,
+            "graph_expansion_results": graph_expansion_map,
+            "b_score_results": b_score_results,
+            "c_rerank_results": c_rerank_results,
+            "rankgpt_results": rankgpt_results,
+            "effective_rerank_results": effective_rerank_results,
+            "final_prompt": "",
+            "final_answer": fallback_answer,
+            "deepseek_usage": None,
+            "confidence": confidence,
+            "fallback_triggered": True,
+            "fallback_answer": fallback_answer,
+            "fallback_reason": chain_fallback_result.get("fallback_reason", ""),
+            "entity_guard": chain_fallback_result,
+            "rankgpt_enabled": effective_enable_rankgpt,
+            "enable_fact_graph_expand": enable_fact_graph_expand,
+        }
+
+        if save_outputs:
+            save_qa_outputs(result)
+
+        return result
+
+    # 4. 闭集实体硬闸门
+    # 实体不存在、深度不覆盖、Top10 不含指定实体时，直接 fallback。
+    entity_guard_result = apply_entity_existence_guard(
+        driver=driver,
+        database=NEO4J_DATABASE,
+        user_question=user_question,
+        question_analysis=question_analysis,
+        retrieved_chunks=retrieved_chunks,
+        effective_rerank_results=effective_rerank_results,
+    )
+
     # 4. 无检索结果兜底
     if not retrieved_chunks:
-        return _build_empty_retrieval_result(
+        empty_result = _build_empty_retrieval_result(
             user_question=user_question,
             question_analysis=question_analysis,
             retrieval_route=chain_result["retrieval_route"],
-            save_outputs=save_outputs,
+            save_outputs=False,
         )
+
+        empty_result["entity_guard"] = entity_guard_result
+
+        if entity_guard_result["fallback_triggered"]:
+            empty_result["final_answer"] = entity_guard_result.get("fallback_answer", "")
+            empty_result["fallback_answer"] = entity_guard_result.get("fallback_answer", "")
+            empty_result["fallback_reason"] = entity_guard_result.get("fallback_reason", "")
+
+        if save_outputs:
+            save_qa_outputs(empty_result)
+
+        return empty_result
 
     # 5. Fallback
     # 注意：这里使用 effective_rerank_results。
     # 如果 RankGPT 成功，则用 RankGPT 后的顺序作为最终上下文依据。
     # 如果 RankGPT 未启用或失败，则 effective_rerank_results 会退回 C/Fact Rule 结果。
-    fallback_result = apply_fallback_policy(
-        confidence=confidence,
-        retrieved_chunks=retrieved_chunks,
-        c_rerank_results=effective_rerank_results,
-    )
+    if entity_guard_result["fallback_triggered"]:
+        fallback_result = entity_guard_result
+    else:
+        fallback_result = apply_fallback_policy(
+            confidence=confidence,
+            retrieved_chunks=retrieved_chunks,
+            c_rerank_results=effective_rerank_results,
+        )
 
     # 6. Final Prompt
     # 注意：为了不改 prompt_builder.py，这里把 effective_rerank_results
@@ -678,6 +1182,8 @@ def run_end_to_end_graphrag_qa(
 
     if fallback_result["fallback_triggered"]:
         final_answer = fallback_result["fallback_answer"]
+    elif chain_result.get("direct_answer"):
+        final_answer = chain_result["direct_answer"]
     elif enable_llm:
         llm_result = generate_answer(
             final_prompt=final_prompt,
@@ -716,10 +1222,13 @@ def run_end_to_end_graphrag_qa(
 
         "final_prompt": final_prompt,
         "final_answer": final_answer,
+        "direct_answer": chain_result.get("direct_answer", ""),
         "deepseek_usage": deepseek_usage,
         "confidence": confidence,
         "fallback_triggered": fallback_result["fallback_triggered"],
         "fallback_answer": fallback_result.get("fallback_answer", ""),
+        "fallback_reason": fallback_result.get("fallback_reason", ""),
+        "entity_guard": entity_guard_result,
         "rankgpt_enabled": effective_enable_rankgpt,
         "enable_fact_graph_expand": enable_fact_graph_expand,
     }

@@ -36,6 +36,10 @@ except Exception:
 
 from src.pipeline.qa_pipeline import run_end_to_end_graphrag_qa
 from src.retrieval.exact_retriever import extract_exact_ids
+from src.retrieval.hydro_feature_retriever import (
+    extract_hydro_feature_query,
+    score_mechanism_coverage,
+)
 from src.rerank.rankgpt_reranker import rankgpt_rerank_chunks
 from src.utils.text import safe_text, make_json_safe
 
@@ -198,12 +202,19 @@ def is_fallback_type(question_type: str, item: Dict[str, Any]) -> bool:
     return bool(item.get("should_abstain", False))
 
 
+def is_causal_type(question_type: str) -> bool:
+    return safe_text(question_type).lower() == "causal_explanation"
+
+
 def infer_expected_route(question_type: str, item: Dict[str, Any]) -> str:
     """
     评测期望路由。
 
     fact_query 应该走：
     - fact_exact_retrieval
+
+    permeability_level 应该走：
+    - lithology_type_exact_retrieval
 
     其他类型默认走：
     - vector_graph_retrieval
@@ -219,6 +230,12 @@ def infer_expected_route(question_type: str, item: Dict[str, Any]) -> str:
 
     if is_fact_type(question_type):
         return "fact_exact_retrieval"
+
+    if safe_text(question_type) == "permeability_level":
+        return "lithology_type_exact_retrieval"
+
+    if is_causal_type(question_type):
+        return "hydro_feature_exact_retrieval"
 
     return "vector_graph_retrieval"
 
@@ -377,6 +394,35 @@ def infer_expected_keywords(item: Dict[str, Any]) -> List[str]:
     return [safe_text(v) for v in values if safe_text(v)]
 
 
+def infer_expected_causal_targets(
+    item: Dict[str, Any],
+    question: str,
+) -> Dict[str, str]:
+    metadata = item.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    extracted = extract_hydro_feature_query(question)
+
+    feature_value = (
+        safe_text(metadata.get("feature_value", ""))
+        or safe_text(item.get("feature_value", ""))
+        or safe_text(extracted.get("feature_value", ""))
+    )
+    permeability_effect = (
+        safe_text(metadata.get("permeability_effect", ""))
+        or safe_text(metadata.get("impact", ""))
+        or safe_text(item.get("permeability_effect", ""))
+        or safe_text(item.get("impact", ""))
+        or safe_text(extracted.get("permeability_effect", ""))
+    )
+
+    return {
+        "feature_value": feature_value,
+        "permeability_effect": permeability_effect,
+    }
+
+
 def unique_normalized_ids(values: Iterable[Any]) -> List[str]:
     seen = set()
     results: List[str] = []
@@ -458,6 +504,115 @@ def hit_keywords_in_items(
     text = " ".join(candidate_text(item) for item in ranked_items[:k])
 
     return all(keyword in text for keyword in expected_keywords if keyword)
+
+
+def _structured_field_equals(item: Dict[str, Any], field_names: List[str], target: str) -> bool:
+    if not target:
+        return False
+
+    for field in field_names:
+        if safe_text(item.get(field, "")) == target:
+            return True
+
+    source_props = item.get("source_props")
+    if isinstance(source_props, dict):
+        for field in field_names:
+            if safe_text(source_props.get(field, "")) == target:
+                return True
+
+    graph_context = item.get("graph_context")
+    if isinstance(graph_context, dict):
+        for key in ["source_props", "props", "properties"]:
+            props = graph_context.get(key)
+            if isinstance(props, dict):
+                for field in field_names:
+                    if safe_text(props.get(field, "")) == target:
+                        return True
+
+    return False
+
+
+def _field_phrase_hit(text: str, field_names: List[str], target: str) -> bool:
+    if not target:
+        return False
+
+    phrases = []
+    if "feature_value" in field_names:
+        phrases.extend(
+            [
+                f"特征取值为“{target}”",
+                f"特征取值为\"{target}\"",
+                f'"feature_value": "{target}"',
+                f'"feature_value":"{target}"',
+            ]
+        )
+    if "permeability_effect" in field_names or "impact" in field_names:
+        phrases.extend(
+            [
+                f"对渗透率的影响为“{target}”",
+                f"对渗透率的影响为\"{target}\"",
+                f'"permeability_effect": "{target}"',
+                f'"permeability_effect":"{target}"',
+                f'"impact": "{target}"',
+                f'"impact":"{target}"',
+            ]
+        )
+
+    return any(phrase in text for phrase in phrases)
+
+
+def exact_field_hit_in_items(
+    ranked_items: List[Dict[str, Any]],
+    field_names: List[str],
+    target: str,
+    k: int,
+) -> bool:
+    if not target:
+        return False
+
+    for item in ranked_items[:k]:
+        if _structured_field_equals(item, field_names, target):
+            return True
+
+    text = " ".join(candidate_text(item) for item in ranked_items[:k])
+    return _field_phrase_hit(text, field_names, target)
+
+
+def eval_causal_constraints(
+    ranked_items: List[Dict[str, Any]],
+    item: Dict[str, Any],
+    question: str,
+    k: int,
+) -> Dict[str, Any]:
+    targets = infer_expected_causal_targets(item, question)
+    feature_value = targets["feature_value"]
+    permeability_effect = targets["permeability_effect"]
+
+    feature_value_hit = exact_field_hit_in_items(
+        ranked_items,
+        ["feature_value"],
+        feature_value,
+        k=k,
+    )
+    permeability_effect_hit = exact_field_hit_in_items(
+        ranked_items,
+        ["permeability_effect", "impact"],
+        permeability_effect,
+        k=k,
+    )
+
+    text = " ".join(candidate_text(x) for x in ranked_items[:k])
+    mechanism_eval = score_mechanism_coverage(text)
+
+    return {
+        "causal_feature_value": feature_value,
+        "causal_permeability_effect": permeability_effect,
+        "causal_feature_value_hit": feature_value_hit,
+        "causal_permeability_effect_hit": permeability_effect_hit,
+        "causal_mechanism_hit": bool(mechanism_eval.get("mechanism_hit", False)),
+        "causal_mechanism_score": mechanism_eval.get("mechanism_score", 0.0),
+        "causal_mechanism_terms": mechanism_eval.get("mechanism_terms", []),
+    }
 
 
 def first_rank_of_expected_id(
@@ -652,6 +807,17 @@ def eval_one_case(
         effective_hit_chunk_top10 = hit_expected_chunk_ids(effective_merged, expected_chunk_ids, k=10)
 
         keyword_hit_top10 = hit_keywords_in_items(effective_merged, expected_keywords, k=10)
+        causal_eval = eval_causal_constraints(effective_merged, item, question, k=10)
+        if not is_causal_type(question_type):
+            causal_eval = {
+                "causal_feature_value": "",
+                "causal_permeability_effect": "",
+                "causal_feature_value_hit": None,
+                "causal_permeability_effect_hit": None,
+                "causal_mechanism_hit": None,
+                "causal_mechanism_score": 0.0,
+                "causal_mechanism_terms": [],
+            }
 
         retrieval_rank_layer = first_rank_of_expected_id(retrieved_merged, expected_layer_ids)
         effective_rank_layer = first_rank_of_expected_id(effective_merged, expected_layer_ids)
@@ -743,6 +909,7 @@ def eval_one_case(
             "effective_hit_chunk_top10": effective_hit_chunk_top10,
 
             "keyword_hit_top10": keyword_hit_top10,
+            **causal_eval,
 
             "retrieval_rank_layer": retrieval_rank_layer,
             "effective_rank_layer": effective_rank_layer,
@@ -769,6 +936,10 @@ def eval_one_case(
                 "source_id": safe_text(x.get("source_id", "")),
                 "final_score": x.get("final_score", None),
                 "rankgpt_used": x.get("rankgpt_used", None),
+                "feature_value_hit": x.get("feature_value_hit", None),
+                "permeability_effect_hit": x.get("permeability_effect_hit", None),
+                "mechanism_hit": x.get("mechanism_hit", None),
+                "mechanism_score": x.get("mechanism_score", None),
                 "rerank_reason": safe_text(x.get("rerank_reason", ""))[:300],
             }
             for i, x in enumerate(effective_merged[:5])
@@ -814,6 +985,13 @@ def eval_one_case(
             "retrieval_hit_chunk_top10": False,
             "effective_hit_chunk_top10": False,
             "keyword_hit_top10": False,
+            "causal_feature_value": "",
+            "causal_permeability_effect": "",
+            "causal_feature_value_hit": None,
+            "causal_permeability_effect_hit": None,
+            "causal_mechanism_hit": None,
+            "causal_mechanism_score": 0.0,
+            "causal_mechanism_terms": [],
             "retrieval_rank_layer": None,
             "effective_rank_layer": None,
             "effective_rank_chunk": None,
@@ -897,6 +1075,7 @@ def summarize_results(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         and not is_fallback_type(safe_text(r.get("question_type", "")), r)
     ]
     fallback_rows = [r for r in rows if is_fallback_type(safe_text(r.get("question_type", "")), r)]
+    causal_rows = [r for r in rows if is_causal_type(safe_text(r.get("question_type", "")))]
 
     summary = {
         "total": total,
@@ -963,6 +1142,15 @@ def summarize_results(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "keyword_hit_top10": bool_rate(non_fact_rows, "keyword_hit_top10"),
         },
 
+        "causal_explanation": {
+            "count": len(causal_rows),
+            "route_accuracy": bool_rate(causal_rows, "route_correct", "route_eval_applicable"),
+            "feature_value_hit_rate": bool_rate(causal_rows, "causal_feature_value_hit"),
+            "permeability_effect_hit_rate": bool_rate(causal_rows, "causal_permeability_effect_hit"),
+            "mechanism_hit_rate": bool_rate(causal_rows, "causal_mechanism_hit"),
+            "avg_mechanism_score": mean_value(causal_rows, "causal_mechanism_score"),
+        },
+
         "fallback": {
             "count": len(fallback_rows),
             "fallback_triggered_rate": bool_rate(fallback_rows, "fallback_triggered"),
@@ -998,6 +1186,7 @@ def build_bad_cases(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         is_fact = is_fact_type(question_type)
         is_fallback = is_fallback_type(question_type, row)
+        is_causal = is_causal_type(question_type)
         is_non_fact = not is_fact and not is_fallback
 
         expected_layer_ids = row.get("expected_layer_ids") or []
@@ -1023,12 +1212,23 @@ def build_bad_cases(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 reasons.append("fact_top10_layer_miss")
 
         # 4. effective rerank 为空
-        if not row.get("effective_rerank_count", 0):
+        # fallback_unanswerable 正确拒答时可以没有有效证据，不能因此算 badcase。
+        if not is_fallback and not row.get("effective_rerank_count", 0):
             reasons.append("empty_effective_rerank")
 
         # 5. 非事实查询关键词未覆盖
-        # causal_explanation / multi_condition / permeability_level 都会走这里
-        if is_non_fact and expected_keywords:
+        # causal_explanation 已拆成 feature/effect/mechanism 三层评测，不再只看 Top10 关键词。
+        if is_causal:
+            if row.get("causal_feature_value_hit") is False:
+                reasons.append("causal_feature_value_miss")
+
+            if row.get("causal_permeability_effect_hit") is False:
+                reasons.append("causal_permeability_effect_miss")
+
+            if row.get("causal_mechanism_hit") is False:
+                reasons.append("causal_mechanism_weak")
+
+        if is_non_fact and not is_causal and expected_keywords:
             if row.get("keyword_hit_top10") is False:
                 reasons.append("non_fact_keyword_miss_top10")
 
@@ -1048,13 +1248,13 @@ def build_bad_cases(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             reasons.append("rankgpt_invalid_chunk_ids")
 
         # 9. RankGPT 开启后仍然没有命中关键词
-        if rankgpt_is_on and is_non_fact and expected_keywords:
+        if rankgpt_is_on and is_non_fact and not is_causal and expected_keywords:
             if row.get("keyword_hit_top10") is False:
                 reasons.append("rankgpt_keyword_still_miss_top10")
 
         # 10. RankGPT 对排序没有变化
         # 这是观察型 bad case，不一定是错误。
-        # 对 causal_explanation 尤其有价值：如果关键词仍未命中且排序没变化，说明 RankGPT 没起到作用。
+        # 对非 causal 的关键词型问题，如果关键词仍未命中且排序没变化，说明 RankGPT 没起到作用。
         if rankgpt_is_on and is_non_fact:
             if row.get("rankgpt_order_changed") is False:
                 reasons.append("rankgpt_no_order_change")
