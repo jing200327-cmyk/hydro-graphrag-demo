@@ -1,6 +1,6 @@
 # app.py
 # ============================================================
-# Streamlit 前端：地下水渗透率 GraphRAG 智能问答系统
+# Streamlit 前端：面向岩土工程与水文地质勘查资料的 GraphRAG 智能问答系统
 # ============================================================
 
 import json
@@ -19,7 +19,7 @@ from qa_backend import run_qa
 # ============================================================
 
 st.set_page_config(
-    page_title="地下水渗透率 GraphRAG 问答系统",
+    page_title="面向岩土工程与水文地质勘查资料的 GraphRAG 智能问答系统",
     page_icon="💧",
     layout="wide",
 )
@@ -584,7 +584,7 @@ def render_result_tabs(result: Dict[str, Any]) -> None:
 
 st.markdown(
     """
-    <div class="main-title">💧 地下水渗透率 GraphRAG 智能问答系统</div>
+    <div class="main-title">💧 面向岩土工程与水文地质勘查资料的 GraphRAG 智能问答系统</div>
     <div class="sub-title">
     基于 Neo4j Vector Index、EvidenceChunk、图谱扩展、B 综合评分、C 水文规则重排序和 DeepSeek 的专业问答界面
     </div>
@@ -659,13 +659,12 @@ with st.sidebar:
     st.markdown("### 示例问题")
 
     example_questions = [
-        "中砂层的渗透率为什么通常比粉质黏土高？",
-        "含砾砂和细砂哪个透水性更强？",
-        "夹黏土薄层会不会降低垂向渗透率？",
-        "强风化岩层是否一定透水性强？",
-        "某钻孔某层位是否具有较强透水性？",
-        "已有 k_value 的分层对应什么透水等级？",
-        "为什么某些砂层渗透率不一定很高？",
+        "CHGC001号钻孔有哪些分层，各个分层深度和岩性如何？",
+        "CHGC011_2 位于哪个深度范围？岩性大类和岩性小类分别是什么？",
+        "CHGC002号钻孔有哪些分层有渗透率观测值？",
+        "为什么水文地质特征“泥质胶结”会对渗透率产生“明显降低”的影响？请结合资料中的规则解释。",
+        "钻孔 CHGC999 在 10m 至 12m 的岩性是什么",
+        "哪些钻孔分层渗透率值较高",
     ]
 
     selected_example = None
