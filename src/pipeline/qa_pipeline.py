@@ -29,6 +29,13 @@ from src.retrieval.hydro_feature_retriever import (
     is_hydro_feature_causal_query,
     retrieve_hydro_feature_exact,
 )
+from src.retrieval.stratigraphy_retriever import (
+    STRATIGRAPHY_ROUTE,
+    build_stratigraphy_direct_answer,
+    is_stratigraphy_query,
+    retrieve_stratigraphy_exact,
+    stratigraphy_rerank,
+)
 from src.rerank.scorer import b_score_chunks
 from src.rerank.reranker import c_rerank_chunks
 from src.rerank.rankgpt_reranker import rankgpt_rerank_chunks
@@ -508,6 +515,45 @@ def _run_rankgpt_if_needed(
 # ============================================================
 # 3. fact_query 新链路
 # ============================================================
+
+def _run_stratigraphy_chain(
+    user_question: str,
+    raw_top_k: int,
+    final_top_k: int,
+) -> Dict[str, Any]:
+    """
+    纪/世/组/段地层字段专用事实检索链路。
+
+    该链路直接从 LithologyLayer 的新增地层属性反查 Borehole，
+    用于“横栏段有哪些钻孔及分层”这类结构化事实查询。
+    """
+
+    top_k = max(raw_top_k, final_top_k, 200)
+    retrieved_chunks = retrieve_stratigraphy_exact(
+        user_question=user_question,
+        top_k=top_k,
+    )
+    rerank_results = stratigraphy_rerank(retrieved_chunks)
+    direct_answer = build_stratigraphy_direct_answer(
+        user_question=user_question,
+        chunks=retrieved_chunks,
+    )
+
+    confidence = 100.0 if retrieved_chunks else 0.0
+
+    return {
+        "retrieval_route": STRATIGRAPHY_ROUTE,
+        "rerank_route": "stratigraphy_rule",
+        "retrieved_chunks": retrieved_chunks,
+        "graph_expansion_map": {},
+        "b_score_results": [],
+        "c_rerank_results": rerank_results,
+        "rankgpt_results": [],
+        "effective_rerank_results": rerank_results,
+        "confidence": confidence,
+        "direct_answer": direct_answer,
+    }
+
 
 def _run_fact_query_chain(
     user_question: str,
@@ -1009,12 +1055,22 @@ def run_end_to_end_graphrag_qa(
         user_question=user_question,
         question_analysis=question_analysis,
     )
+    is_strat_query = is_stratigraphy_query(
+        user_question=user_question,
+        question_analysis=question_analysis,
+    )
     is_fact_query = _is_fact_query(question_analysis)
+
+    if is_strat_query:
+        question_analysis["问题意图"] = "地层信息事实查询"
+        question_intent = "地层信息事实查询"
 
     if is_lithology_level_query:
         retrieval_route_for_guard = LITHOLOGY_TYPE_EXACT_ROUTE
     elif is_hydro_feature_query:
         retrieval_route_for_guard = HYDRO_FEATURE_EXACT_ROUTE
+    elif is_strat_query:
+        retrieval_route_for_guard = STRATIGRAPHY_ROUTE
     elif is_fact_query:
         retrieval_route_for_guard = "fact_exact_retrieval"
     else:
@@ -1052,6 +1108,12 @@ def run_end_to_end_graphrag_qa(
             user_question=user_question,
             question_analysis=question_analysis,
             driver=driver,
+            final_top_k=final_top_k,
+        )
+    elif is_strat_query:
+        chain_result = _run_stratigraphy_chain(
+            user_question=user_question,
+            raw_top_k=raw_top_k,
             final_top_k=final_top_k,
         )
     elif is_fact_query:

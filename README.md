@@ -12,6 +12,12 @@
 - 重排与生成端设计：根据不同问题路由，设计针对性评分规则，对召回的 chunk 进行打分后重排；针对不同问题类型分别设计路由级 Prompt 模板，约束模型必须基于证据 chunk 回答，降低无依据生成。
 - 测评优化：构建覆盖事实查询、透水等级、因果解释、多条件查询、不可回答问题的 50 条 MVP 测评集；事实查询 top1 召回表现稳定，命中率为 100%，非事实查询类问题 keyword_hit_top10 仅为 50%，不可回答问题有 4 条兜底失败。基于 Badcase 分析归因后，通过三轮优化方案，v3 版本的测评结果显示不可回答问题兜底触发率由 20% 提升至 100%，non_fact keyword_hit_top10 提升至 93%。
 
+## 地层信息事实查询扩展
+
+在原有 `LithologyLayer` 分层结构基础上，新增 `geologic_period`、`geologic_epoch`、`strat_group`、`strat_member` 四类地层信息字段，对应“纪、世、组、段”。知识图谱中同步构建 `GeologicPeriod`、`GeologicEpoch`、`StratGroup`、`StratMember` 节点，并通过 `HAS_GEOLOGIC_PERIOD`、`HAS_GEOLOGIC_EPOCH`、`BELONGS_TO_STRAT_GROUP`、`BELONGS_TO_STRAT_MEMBER` 与 `LithologyLayer` 建立关系。
+
+项目新增 `stratigraphy_exact_retrieval` 结构化检索链路，用于回答“横栏段有哪些钻孔及分层”“桂洲组对应哪些分层”等纪、世、组、段相关事实查询。该链路从地层字段精确命中 `LithologyLayer`，再沿 `HAS_LAYER` 关联 `Borehole`，返回钻孔坐标、地面高程、分层深度、岩性和地层归属信息，避免这类结构化问题依赖向量相似度召回。
+
 ## 技术栈
 Python / Streamlit / RAG / GraphRAG / 向量检索 / JSONL Eval
 
@@ -92,6 +98,9 @@ v2 的 Badcase 主要来自非事实查询的关键词命中不足和不可回�
 
 ### 6. 哪些钻孔分层渗透率值较高
 ![哪些钻孔分层渗透率值较高](<outputs/run_pictures/哪些钻孔分层渗透率值较高.png>)
+
+### 7. 给出横栏段的所有钻孔的位置及其分层信息
+![给出横栏段的所有钻孔的位置及其分层信息](<outputs/run_pictures/给出横栏段的所有钻孔的位置及其分层信息.png>)
 
 ## 本地运行
 ```bash
