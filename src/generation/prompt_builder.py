@@ -25,8 +25,8 @@ FINAL_ANSWER_SYSTEM_PROMPT = """
 
 
 END_TO_END_PROMPT = """
-一、用户原始问题
-{user_question}
+一、用户问题与历史上下文
+{question_context}
 
 二、Neo4j 向量检索结果
 {vector_search_results}
@@ -41,12 +41,13 @@ END_TO_END_PROMPT = """
 {c_rerank_results}
 
 六、回答生成要求
-1. 只能基于上述上下文回答。
+1. 只能基于本轮检索证据、图谱扩展结果、B 评分结果和 C 重排序结果回答。
 2. 不得编造渗透率数值、钻孔编号、层位编号。
 3. 如果有 k_value、k_log10、k_unit、source、reliability，要优先作为直接证据。
 4. 如果没有直接渗透率记录，要明确说明属于规则推断。
 5. 如果证据不足或正负因素并存，要明确说明不确定性。
-6. 用中文回答，面向水文地质/工程地质用户，表达清晰。
+6. 历史上下文只用于理解“这些、上述、该段、这些钻孔”等指代关系，不得把历史回答当成本轮事实证据。
+7. 用中文回答，面向水文地质/工程地质用户，表达清晰。
 """.strip()
 
 
@@ -117,13 +118,54 @@ def format_c_rerank_results(
     )
 
 
+def format_question_context(
+    user_question: str,
+    original_user_question: str = "",
+    rewritten_question: str = "",
+    history_context: Dict[str, Any] | None = None,
+    query_rewrite: Dict[str, Any] | None = None,
+) -> str:
+    history_context = history_context or {}
+    query_rewrite = query_rewrite or {}
+
+    rows = {
+        "original_user_question": original_user_question or user_question,
+        "retrieval_question": rewritten_question or user_question,
+        "query_rewrite": query_rewrite,
+        "history_context": {
+            "summary": history_context.get("summary", ""),
+            "recent_turns": history_context.get("recent_turns", []),
+            "recent_entities": history_context.get("recent_entities", {}),
+            "usage": history_context.get("usage", "history_for_coreference_only"),
+        },
+        "history_use_policy": (
+            "历史上下文仅用于指代消解和理解连续追问；"
+            "本轮事实结论必须来自当前检索证据和图谱上下文。"
+        ),
+    }
+
+    return json.dumps(rows, ensure_ascii=False, indent=2, default=str)
+
+
 def build_final_prompt(
     user_question: str,
     retrieved_chunks: List[Dict[str, Any]],
     b_score_results: List[Dict[str, Any]],
     c_rerank_results: List[Dict[str, Any]],
     final_top_k: int = 10,
+    original_user_question: str = "",
+    rewritten_question: str = "",
+    history_context: Dict[str, Any] | None = None,
+    query_rewrite: Dict[str, Any] | None = None,
 ) -> str:
+    question_context_text = format_question_context(
+        user_question=user_question,
+        original_user_question=original_user_question,
+        rewritten_question=rewritten_question,
+        history_context=history_context,
+        query_rewrite=query_rewrite,
+    )
+
     vector_search_results_text = format_vector_search_results(
         retrieved_chunks=retrieved_chunks,
         top_n=final_top_k,
@@ -145,7 +187,7 @@ def build_final_prompt(
     )
 
     return END_TO_END_PROMPT.format(
-        user_question=user_question,
+        question_context=question_context_text,
         vector_search_results=vector_search_results_text,
         graph_expansion_results=graph_expansion_results_text,
         b_score_results=b_score_results_text,

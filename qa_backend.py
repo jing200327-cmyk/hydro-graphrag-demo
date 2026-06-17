@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -88,6 +89,12 @@ def normalize_result(raw_result: Any) -> Dict[str, Any]:
         "deepseek_usage": raw_result.get("deepseek_usage"),
         "confidence": raw_result.get("confidence"),
         "fallback_triggered": raw_result.get("fallback_triggered"),
+        "conversation_id": raw_result.get("conversation_id", ""),
+        "turn_id": raw_result.get("turn_id", ""),
+        "original_user_question": raw_result.get("original_user_question", raw_result.get("user_question", "")),
+        "rewritten_question": raw_result.get("rewritten_question", raw_result.get("user_question", "")),
+        "history_context": raw_result.get("history_context", {}),
+        "query_rewrite": raw_result.get("query_rewrite", {}),
         "raw": raw_result,
     }
 
@@ -99,20 +106,39 @@ def run_qa(
     b_keep_threshold: float = 60.0,
     c_context_threshold: float = 60.0,
     max_tokens: int = 2048,
+    conversation_id: Optional[str] = None,
+    persist_history: bool = True,
 ) -> Dict[str, Any]:
+    from src.conversation.query_rewriter import rewrite_user_question
+    from src.conversation.service import ConversationService, timed_ms
     from src.pipeline.qa_pipeline import run_end_to_end_graphrag_qa
+
+    started_at = time.perf_counter()
+    conversation_service = ConversationService()
+    effective_conversation_id = conversation_service.ensure_conversation(conversation_id)
+    history_context = conversation_service.build_history_context(effective_conversation_id)
+    rewrite_result = rewrite_user_question(
+        user_question=user_question,
+        history_context=history_context,
+    )
+    rewritten_question = rewrite_result.get("rewritten_question") or user_question
 
     print("=" * 100)
     print("[Streamlit] Python:", sys.executable)
     print("[Streamlit] APP_DIR:", APP_DIR)
     print("[Streamlit] REAL_RAG_DIR:", REAL_RAG_DIR)
     print("[Streamlit] user_question:", user_question)
+    print("[Streamlit] rewritten_question:", rewritten_question)
+    print("[Streamlit] conversation_id:", effective_conversation_id)
     print("[Streamlit] raw_top_k:", raw_top_k)
     print("[Streamlit] final_top_k:", top_k)
     print("=" * 100)
 
     raw_result = run_end_to_end_graphrag_qa(
-        user_question=user_question,
+        user_question=rewritten_question,
+        original_user_question=user_question,
+        history_context=history_context,
+        query_rewrite=rewrite_result,
         raw_top_k=raw_top_k,
         final_top_k=top_k,
         b_keep_threshold=b_keep_threshold,
@@ -122,6 +148,25 @@ def run_qa(
         enable_llm=True,
         enable_rankgpt=False,
     )
+
+    if isinstance(raw_result, dict):
+        raw_result["conversation_id"] = effective_conversation_id
+        raw_result["original_user_question"] = user_question
+        raw_result["rewritten_question"] = rewritten_question
+        raw_result["history_context"] = history_context
+        raw_result["query_rewrite"] = rewrite_result
+
+        if persist_history:
+            turn_id = conversation_service.append_turn(
+                conversation_id=effective_conversation_id,
+                user_question=user_question,
+                rewritten_question=rewritten_question,
+                result=raw_result,
+                query_rewrite=rewrite_result,
+                history_context=history_context,
+                latency_ms=timed_ms(started_at),
+            )
+            raw_result["turn_id"] = turn_id
 
     return normalize_result(raw_result)
 
@@ -133,6 +178,8 @@ def answer_question(
     b_keep_threshold: float = 60.0,
     c_context_threshold: float = 60.0,
     max_tokens: int = 2048,
+    conversation_id: Optional[str] = None,
+    persist_history: bool = True,
 ) -> Dict[str, Any]:
     """
     兼容旧接口。
@@ -148,6 +195,8 @@ def answer_question(
         b_keep_threshold=b_keep_threshold,
         c_context_threshold=c_context_threshold,
         max_tokens=max_tokens,
+        conversation_id=conversation_id,
+        persist_history=persist_history,
     )
 
 

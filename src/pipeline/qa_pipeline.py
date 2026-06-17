@@ -989,6 +989,9 @@ def _run_hydro_graphrag_chain(
 
 def run_end_to_end_graphrag_qa(
     user_question: str,
+    original_user_question: str = "",
+    history_context: Optional[Dict[str, Any]] = None,
+    query_rewrite: Optional[Dict[str, Any]] = None,
     raw_top_k: int = 30,
     final_top_k: int = 10,
     b_keep_threshold: float = 60.0,
@@ -1032,6 +1035,9 @@ def run_end_to_end_graphrag_qa(
     """
 
     user_question = safe_text(user_question)
+    original_user_question = safe_text(original_user_question) or user_question
+    history_context = history_context or {}
+    query_rewrite = query_rewrite or {}
 
     if not user_question:
         raise ValueError("user_question 不能为空。")
@@ -1237,6 +1243,10 @@ def run_end_to_end_graphrag_qa(
         b_score_results=b_score_results,
         c_rerank_results=effective_rerank_results,
         final_top_k=final_top_k,
+        original_user_question=original_user_question,
+        rewritten_question=user_question,
+        history_context=history_context,
+        query_rewrite=query_rewrite,
     )
 
     # 7. Final Answer
@@ -1259,6 +1269,10 @@ def run_end_to_end_graphrag_qa(
     # 8. 组装结果
     result = {
         "user_question": user_question,
+        "original_user_question": original_user_question,
+        "rewritten_question": user_question,
+        "history_context": history_context,
+        "query_rewrite": query_rewrite,
         "question_analysis": question_analysis,
         "question_intent": question_intent,
         "retrieval_route": chain_result["retrieval_route"],

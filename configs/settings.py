@@ -65,3 +65,10 @@ DEEPSEEK_MODEL = env("DEEPSEEK_MODEL", "deepseek-chat")
 OUTPUT_DIR = Path(
     env("HYDRO_GRAPHRAG_OUTPUT_DIR", str(PROJECT_DIR / "outputs" / "run_logs"))
 ).resolve()
+
+CONVERSATION_DB_PATH = Path(
+    env(
+        "HYDRO_GRAPHRAG_CONVERSATION_DB_PATH",
+        str(PROJECT_DIR / "data" / "conversations" / "hydro_chat_history.sqlite"),
+    )
+).resolve()

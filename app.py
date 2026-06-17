@@ -12,6 +12,7 @@ import pandas as pd
 import streamlit as st
 
 from qa_backend import run_qa
+from src.conversation.service import ConversationService
 
 
 # ============================================================
@@ -96,8 +97,32 @@ def init_session_state() -> None:
     if "run_count" not in st.session_state:
         st.session_state.run_count = 0
 
+    if "conversation_id" not in st.session_state:
+        st.session_state.conversation_id = ""
+
+    if "feedback_submitted" not in st.session_state:
+        st.session_state.feedback_submitted = set()
+
 
 init_session_state()
+
+conversation_service = ConversationService()
+
+if not st.session_state.conversation_id:
+    st.session_state.conversation_id = conversation_service.create_conversation(
+        title="新会话",
+        project_name="hydro_graphrag_streamlit",
+    )
+
+if not conversation_service.conversation_exists(st.session_state.conversation_id):
+    st.session_state.conversation_id = conversation_service.create_conversation(
+        title="新会话",
+        project_name="hydro_graphrag_streamlit",
+    )
+
+st.session_state.run_count = len(
+    conversation_service.load_messages(st.session_state.conversation_id)
+) // 2
 
 
 # ============================================================
@@ -168,6 +193,61 @@ def render_markdown_download(text: str, filename_prefix: str = "final_answer") -
         mime="text/markdown",
         use_container_width=True,
     )
+
+
+def render_turn_feedback(turn_id: str, key_prefix: str = "") -> None:
+    turn_id = str(turn_id or "").strip()
+
+    if not turn_id:
+        return
+
+    submitted_key = f"{key_prefix}:{turn_id}"
+
+    if submitted_key in st.session_state.feedback_submitted:
+        st.caption("已记录本轮反馈。")
+        return
+
+    st.caption("本轮回答反馈")
+    tag = st.selectbox(
+        "问题归因标签",
+        options=[
+            "检索不准",
+            "图谱缺数据",
+            "回答不完整",
+            "兜底错误",
+            "事实字段错误",
+        ],
+        key=f"feedback_tag_{submitted_key}",
+    )
+    comment = st.text_input(
+        "补充说明（可选）",
+        key=f"feedback_comment_{submitted_key}",
+    )
+    col_helpful, col_bad = st.columns(2)
+
+    with col_helpful:
+        if st.button("👍 有帮助", key=f"feedback_helpful_{submitted_key}", use_container_width=True):
+            conversation_service.add_feedback(
+                turn_id=turn_id,
+                rating=5,
+                tag="有帮助",
+                comment=comment,
+                metadata={"ui": "streamlit"},
+            )
+            st.session_state.feedback_submitted.add(submitted_key)
+            st.rerun()
+
+    with col_bad:
+        if st.button("👎 不准确", key=f"feedback_bad_{submitted_key}", use_container_width=True):
+            conversation_service.add_feedback(
+                turn_id=turn_id,
+                rating=-1,
+                tag=tag,
+                comment=comment,
+                metadata={"ui": "streamlit"},
+            )
+            st.session_state.feedback_submitted.add(submitted_key)
+            st.rerun()
 
 
 def get_score_value(item: Dict[str, Any]) -> Any:
@@ -610,6 +690,106 @@ st.markdown(
 with st.sidebar:
     st.header("⚙️ 控制面板")
 
+    st.markdown("### 会话管理")
+
+    current_conversation = conversation_service.get_conversation(st.session_state.conversation_id)
+    current_title = current_conversation.get("title") or "新会话"
+
+    st.caption(f"当前会话 ID：{st.session_state.conversation_id}")
+    edited_title = st.text_input(
+        "当前会话标题",
+        value=current_title,
+        key=f"conversation_title_{st.session_state.conversation_id}",
+    )
+
+    if st.button("保存会话标题", use_container_width=True):
+        conversation_service.update_conversation_title(
+            st.session_state.conversation_id,
+            edited_title,
+        )
+        st.rerun()
+
+    recent_conversations = conversation_service.list_conversations(limit=20)
+    conversation_labels = []
+    conversation_id_by_label = {}
+
+    for item in recent_conversations:
+        title = item.get("title") or "新会话"
+        turn_count = item.get("turn_count") or 0
+        short_id = str(item.get("conversation_id", ""))[-6:]
+        label = f"{title}（{turn_count}轮，{short_id}）"
+        conversation_labels.append(label)
+        conversation_id_by_label[label] = item.get("conversation_id")
+
+    current_label = next(
+        (
+            label
+            for label, conv_id in conversation_id_by_label.items()
+            if conv_id == st.session_state.conversation_id
+        ),
+        conversation_labels[0] if conversation_labels else "",
+    )
+
+    if conversation_labels:
+        selected_conversation_label = st.selectbox(
+            "历史会话列表",
+            options=conversation_labels,
+            index=conversation_labels.index(current_label),
+        )
+        selected_conversation_id = conversation_id_by_label[selected_conversation_label]
+
+        if selected_conversation_id != st.session_state.conversation_id:
+            st.session_state.conversation_id = selected_conversation_id
+            st.session_state.last_result = None
+            st.session_state.last_question = ""
+            st.session_state.run_count = len(
+                conversation_service.load_messages(selected_conversation_id)
+            ) // 2
+            st.rerun()
+
+    if st.button("➕ 新建会话", use_container_width=True):
+        st.session_state.conversation_id = conversation_service.create_conversation(
+            title="新会话",
+            project_name="hydro_graphrag_streamlit",
+        )
+        st.session_state.last_result = None
+        st.session_state.last_question = ""
+        st.session_state.run_count = 0
+        st.rerun()
+
+    export_json = conversation_service.export_conversation_json(st.session_state.conversation_id)
+    export_markdown = conversation_service.export_conversation_markdown(st.session_state.conversation_id)
+    export_base_name = f"conversation_{st.session_state.conversation_id[-8:]}"
+
+    st.download_button(
+        "导出当前会话 JSON",
+        data=export_json,
+        file_name=f"{export_base_name}.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+    st.download_button(
+        "导出当前会话 Markdown",
+        data=export_markdown,
+        file_name=f"{export_base_name}.md",
+        mime="text/markdown",
+        use_container_width=True,
+    )
+
+    confirm_delete = st.checkbox("确认删除当前会话")
+    if st.button("删除当前会话", use_container_width=True, disabled=not confirm_delete):
+        conversation_service.delete_conversation(st.session_state.conversation_id)
+        st.session_state.conversation_id = conversation_service.create_conversation(
+            title="新会话",
+            project_name="hydro_graphrag_streamlit",
+        )
+        st.session_state.last_result = None
+        st.session_state.last_question = ""
+        st.session_state.run_count = 0
+        st.rerun()
+
+    st.divider()
+
     st.markdown("### 检索与生成参数")
 
     raw_top_k = st.slider(
@@ -665,6 +845,7 @@ with st.sidebar:
         "为什么水文地质特征“泥质胶结”会对渗透率产生“明显降低”的影响？请结合资料中的规则解释。",
         "钻孔 CHGC999 在 10m 至 12m 的岩性是什么",
         "哪些钻孔分层渗透率值较高",
+        "给出横栏段的所有钻孔的位置及其分层信息",
     ]
 
     selected_example = None
@@ -683,7 +864,10 @@ with st.sidebar:
     st.divider()
 
     if st.button("🧹 清空聊天记录", use_container_width=True):
-        st.session_state.messages = []
+        st.session_state.conversation_id = conversation_service.create_conversation(
+            title="新会话",
+            project_name="hydro_graphrag_streamlit",
+        )
         st.session_state.last_result = None
         st.session_state.last_question = ""
         st.session_state.run_count = 0
@@ -694,9 +878,17 @@ with st.sidebar:
 # 8. 展示历史聊天
 # ============================================================
 
-for msg in st.session_state.messages:
+conversation_messages = conversation_service.load_messages(st.session_state.conversation_id)
+st.session_state.run_count = len(conversation_messages) // 2
+
+for msg in conversation_messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+        if msg["role"] == "assistant":
+            render_turn_feedback(
+                turn_id=msg.get("turn_id", ""),
+                key_prefix=f"history_{msg.get('turn_index')}",
+            )
 
 
 # ============================================================
@@ -715,13 +907,6 @@ user_question = selected_example or typed_question
 if user_question:
     st.session_state.last_question = user_question
     st.session_state.run_count += 1
-
-    st.session_state.messages.append(
-        {
-            "role": "user",
-            "content": user_question,
-        }
-    )
 
     with st.chat_message("user"):
         st.markdown(user_question)
@@ -744,6 +929,7 @@ if user_question:
                     b_keep_threshold=b_keep_threshold,
                     c_context_threshold=c_context_threshold,
                     max_tokens=max_tokens,
+                    conversation_id=st.session_state.conversation_id,
                 )
 
                 status.update(
@@ -765,16 +951,17 @@ if user_question:
 
         final_answer = result.get("final_answer", "未生成最终答案。")
 
+        if result.get("conversation_id"):
+            st.session_state.conversation_id = result["conversation_id"]
+
         st.markdown(final_answer)
 
         if show_final_answer_download:
             render_markdown_download(final_answer)
 
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": final_answer,
-            }
+        render_turn_feedback(
+            turn_id=result.get("turn_id", ""),
+            key_prefix="current",
         )
 
         st.session_state.last_result = result

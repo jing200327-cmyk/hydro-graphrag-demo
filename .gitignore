@@ -18,10 +18,14 @@ env/
 .env.*
 !.env.example
 data/private/
+data/conversations/*.sqlite
+data/conversations/*.sqlite-*
 
 # IDE
 .vscode/
 .idea/
+.claude/
+UsersMECHREVOana_expRAGpehydro_graphrag_streamlit_r1.claudeskillsresearch-paper-writing-skills/
 
 # Outputs / logs
 output/
