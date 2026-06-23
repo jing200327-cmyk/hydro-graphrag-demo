@@ -79,6 +79,47 @@ v2 的 Badcase 主要来自非事实查询的关键词命中不足和不可回�
 
 统计脚本：`python scripts/summarize_eval_reports.py`
 
+## v4 Stratigraphy 专项测评
+
+为验证新增 `stratigraphy_exact_retrieval` 路由，项目在不覆盖原始 50 条 MVP 测评集的前提下，新增 v4 测评集：
+
+`evals/datasets/rag_mvp_eval_50_stratigraphy_v4.jsonl`
+
+v4 保持总量 50 条和原 JSONL 顶层字段结构不变，仅替换前 15 条事实查询中的 10 条为纪、世、组、段反向查询问题；其余 5 条事实查询作为回归对照，后 35 条保持不变。新增 10 条覆盖 `strat_member` 4 条、`strat_group` 2 条、`geologic_epoch` 2 条、`geologic_period` 2 条。当前图谱中 `geologic_period` 只有 `第四纪` 一个真实取值，因此两条“纪”维度问题均使用 `第四纪` 的不同问法，没有编造不存在的地层名称。
+
+v4 ground truth 由 Neo4j 精确 Cypher 查询生成，不使用 LLM 标注。专项评测结果如下：
+
+| 指标 | v4 Stratigraphy |
+| --- | ---: |
+| Stratigraphy 路由命中率 | 10/10，100.0% |
+| 检索召回率 | 82.86% |
+| 检索准确率 | 100.0% |
+| 答案准确率 | 0.0% |
+| 零幻觉率 | 100.0% |
+| 原有 40 条回归数 | 0 |
+
+主要结论：
+
+- 新增 10 条地层事实查询全部进入 `stratigraphy_exact_retrieval`，且 `rerank_route=stratigraphy_rule`。
+- 检索准确率和零幻觉率均为 100%，说明没有混入不属于目标地层条件的层位。
+- 检索召回率为 82.86%，主要原因是 `全新世`、`更新世`、`第四纪` 这类大结果集超过当前 `retrieve_stratigraphy_exact()` 的 200 条返回上限。
+- 答案准确率为 0%，原因是当前 Markdown 直接答案表格只聚合展示在“对应分层”列，没有显式拆列输出层位 ID、顶板深度、底板深度、厚度、纪、世、组、段、岩性字段。
+- 原有 40 条样本未出现回归，含“为什么、原因、透水、渗透率”的问题未被 Stratigraphy 路由误伤。
+
+v4 结果文件：
+
+- `evals/results/v4_stratigraphy/v4_stratigraphy_metrics.json`
+- `evals/results/v4_stratigraphy/v4_stratigraphy_badcases.md`
+- `evals/results/v4_stratigraphy/v4_stratigraphy_summary.md`
+
+可复现命令：
+
+```bash
+python evals/scripts/build_stratigraphy_eval_v4.py
+python evals/eval_retrieval_v2.py --dataset evals/datasets/rag_mvp_eval_50_stratigraphy_v4.jsonl --output-dir evals/results/v4_stratigraphy --rankgpt off
+python evals/scripts/analyze_stratigraphy_v4.py --dataset evals/datasets/rag_mvp_eval_50_stratigraphy_v4.jsonl --eval-details evals/results/v4_stratigraphy/retrieval_v2_rankgpt_off_details.jsonl --output-dir evals/results/v4_stratigraphy
+```
+
 ## 示例问题运行截图
 
 ### 1. CHGC001号钻孔有哪些分层，各个分层深度和岩性如何？

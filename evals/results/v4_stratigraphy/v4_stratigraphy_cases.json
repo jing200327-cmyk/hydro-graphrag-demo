@@ -1,0 +1,114 @@
+{
+  "dataset_path": "C:\\Users\\MECHREVO\\ana_exp\\RAG\\pe\\hydro_graphrag_streamlit_r1\\evals\\datasets\\rag_mvp_eval_50_stratigraphy_v4.jsonl",
+  "replaced_count": 10,
+  "kept_fact_control_ids": [
+    "qa_011",
+    "qa_012",
+    "qa_013",
+    "qa_014",
+    "qa_015"
+  ],
+  "total_count": 50,
+  "cases": [
+    {
+      "case_id": "qa_001",
+      "original_question": "钻孔 CHGC001 的分层 CHGC001_2 位于哪个深度范围？岩性大类和岩性小类分别是什么？",
+      "new_question": "列出晚更新世冲洪积层对应的钻孔及分层信息。",
+      "stratigraphy_dimension": "strat_member",
+      "stratigraphy_term": "晚更新世冲洪积层",
+      "expected_route": "stratigraphy_exact_retrieval",
+      "ground_truth_count": 6,
+      "ground_truth_borehole_count": 2
+    },
+    {
+      "case_id": "qa_002",
+      "original_question": "钻孔 CHGC002 的分层 CHGC002_2 位于哪个深度范围？岩性大类和岩性小类分别是什么？",
+      "new_question": "灯笼沙段有哪些钻孔？请给出对应层位和分层信息。",
+      "stratigraphy_dimension": "strat_member",
+      "stratigraphy_term": "灯笼沙段",
+      "expected_route": "stratigraphy_exact_retrieval",
+      "ground_truth_count": 60,
+      "ground_truth_borehole_count": 42
+    },
+    {
+      "case_id": "qa_003",
+      "original_question": "钻孔 CHGC003 的分层 CHGC003_2 位于哪个深度范围？岩性大类和岩性小类分别是什么？",
+      "new_question": "给出人工填土在各钻孔中的分布情况和层位信息。",
+      "stratigraphy_dimension": "strat_member",
+      "stratigraphy_term": "人工填土",
+      "expected_route": "stratigraphy_exact_retrieval",
+      "ground_truth_count": 53,
+      "ground_truth_borehole_count": 50
+    },
+    {
+      "case_id": "qa_004",
+      "original_question": "钻孔 CHGC004 的分层 CHGC004_2 位于哪个深度范围？岩性大类和岩性小类分别是什么？",
+      "new_question": "列出光明村层相关的所有钻孔、层位和分层信息。",
+      "stratigraphy_dimension": "strat_member",
+      "stratigraphy_term": "光明村层",
+      "expected_route": "stratigraphy_exact_retrieval",
+      "ground_truth_count": 10,
+      "ground_truth_borehole_count": 7
+    },
+    {
+      "case_id": "qa_005",
+      "original_question": "钻孔 CHGC005 的分层 CHGC005_3 位于哪个深度范围？岩性大类和岩性小类分别是什么？",
+      "new_question": "给出晚更新世冲洪积层在各钻孔中的分布情况和层位信息。",
+      "stratigraphy_dimension": "strat_group",
+      "stratigraphy_term": "晚更新世冲洪积层",
+      "expected_route": "stratigraphy_exact_retrieval",
+      "ground_truth_count": 6,
+      "ground_truth_borehole_count": 2
+    },
+    {
+      "case_id": "qa_006",
+      "original_question": "钻孔 CHGC006 的分层 CHGC006_2 位于哪个深度范围？岩性大类和岩性小类分别是什么？",
+      "new_question": "列出人工填土对应的钻孔及分层信息。",
+      "stratigraphy_dimension": "strat_group",
+      "stratigraphy_term": "人工填土",
+      "expected_route": "stratigraphy_exact_retrieval",
+      "ground_truth_count": 53,
+      "ground_truth_borehole_count": 50
+    },
+    {
+      "case_id": "qa_007",
+      "original_question": "钻孔 CHGC007 的分层 CHGC007_2 位于哪个深度范围？岩性大类和岩性小类分别是什么？",
+      "new_question": "全新世有哪些钻孔层位记录？请列出对应分层信息。",
+      "stratigraphy_dimension": "geologic_epoch",
+      "stratigraphy_term": "全新世",
+      "expected_route": "stratigraphy_exact_retrieval",
+      "ground_truth_count": 257,
+      "ground_truth_borehole_count": 50
+    },
+    {
+      "case_id": "qa_008",
+      "original_question": "钻孔 CHGC008 的分层 CHGC008_3 位于哪个深度范围？岩性大类和岩性小类分别是什么？",
+      "new_question": "给出更新世对应的所有钻孔、层位和分层信息。",
+      "stratigraphy_dimension": "geologic_epoch",
+      "stratigraphy_term": "更新世",
+      "expected_route": "stratigraphy_exact_retrieval",
+      "ground_truth_count": 268,
+      "ground_truth_borehole_count": 43
+    },
+    {
+      "case_id": "qa_009",
+      "original_question": "钻孔 CHGC009 的分层 CHGC009_2 位于哪个深度范围？岩性大类和岩性小类分别是什么？",
+      "new_question": "列出第四纪对应的钻孔及分层信息。",
+      "stratigraphy_dimension": "geologic_period",
+      "stratigraphy_term": "第四纪",
+      "expected_route": "stratigraphy_exact_retrieval",
+      "ground_truth_count": 525,
+      "ground_truth_borehole_count": 50
+    },
+    {
+      "case_id": "qa_010",
+      "original_question": "钻孔 CHGC010 的分层 CHGC010_2 位于哪个深度范围？岩性大类和岩性小类分别是什么？",
+      "new_question": "给出第四纪对应的所有钻孔、层位和分层信息。",
+      "stratigraphy_dimension": "geologic_period",
+      "stratigraphy_term": "第四纪",
+      "expected_route": "stratigraphy_exact_retrieval",
+      "ground_truth_count": 525,
+      "ground_truth_borehole_count": 50
+    }
+  ]
+}

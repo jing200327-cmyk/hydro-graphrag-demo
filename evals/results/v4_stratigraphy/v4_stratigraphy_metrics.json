@@ -1,0 +1,24 @@
+{
+  "dataset": {
+    "path": "C:\\Users\\MECHREVO\\ana_exp\\RAG\\pe\\hydro_graphrag_streamlit_r1\\evals\\datasets\\rag_mvp_eval_50_stratigraphy_v4.jsonl",
+    "total_count": 50,
+    "stratigraphy_case_count": 10,
+    "regression_case_count": 40
+  },
+  "stratigraphy": {
+    "route_hit_count": 10,
+    "route_hit_rate_percent": 100.0,
+    "avg_retrieval_recall": 0.8286,
+    "avg_retrieval_recall_percent": 82.86,
+    "avg_retrieval_precision": 1.0,
+    "avg_retrieval_precision_percent": 100.0,
+    "answer_accuracy_count": 0,
+    "answer_accuracy_percent": 0.0,
+    "no_hallucination_count": 10,
+    "no_hallucination_percent": 100.0
+  },
+  "regression": {
+    "regression_count": 0,
+    "regression_case_ids": []
+  }
+}
